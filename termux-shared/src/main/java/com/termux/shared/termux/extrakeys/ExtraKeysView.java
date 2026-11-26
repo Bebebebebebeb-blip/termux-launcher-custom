@@ -212,8 +212,13 @@ public final class ExtraKeysView extends GridLayout {
      */
     protected IExtraKeysView mExtraKeysViewClient;
 
-    /** Fallback used when a child button receives a left swipe before the toolbar pager can. */
-    @Nullable private Runnable mToolbarTextInputSwipeListener;
+    /** Turns the toolbar page when a sideways drag starts on a key, which the pager never sees. */
+    public interface ToolbarPageSwipeListener {
+        /** @param direction +1 for the next page, -1 for the previous one. */
+        void onToolbarPageSwipe(int direction);
+    }
+
+    @Nullable private ToolbarPageSwipeListener mToolbarPageSwipeListener;
 
     /**
      * The map for the {@link SpecialButton} and their {@link SpecialButtonState}. Defaults to
@@ -478,8 +483,8 @@ public final class ExtraKeysView extends GridLayout {
         return mExtraKeysViewClient;
     }
 
-    public void setToolbarTextInputSwipeListener(@Nullable Runnable listener) {
-        mToolbarTextInputSwipeListener = listener;
+    public void setToolbarPageSwipeListener(@Nullable ToolbarPageSwipeListener listener) {
+        mToolbarPageSwipeListener = listener;
     }
 
     /** True when the keys stand in a column on a screen edge instead of lying in a row. */
@@ -839,20 +844,20 @@ public final class ExtraKeysView extends GridLayout {
                             float horizontalTravelPx = Math.abs(event.getRawX() - popupSwipeDownRawX[0]);
                             float leftTravelPx = popupSwipeDownRawX[0] - event.getRawX();
                             float verticalTravelPx = Math.abs(event.getRawY() - popupSwipeDownRawY[0]);
-                            boolean toolbarPageSwipe = ExtraKeysGesturePolicy.isToolbarPageSwipe(
+                            int pageSwipe = ExtraKeysGesturePolicy.toolbarPageSwipeDirection(
                                 leftTravelPx,
                                 verticalTravelPx,
                                 popupSwipeThresholdPx
                             );
-                            if (!toolbarPageSwipeTriggered[0] && toolbarPageSwipe
-                                && mToolbarTextInputSwipeListener != null) {
+                            if (!toolbarPageSwipeTriggered[0] && pageSwipe != 0
+                                && mToolbarPageSwipeListener != null) {
                                 toolbarPageSwipeTriggered[0] = true;
                                 stopScheduledExecutors();
                                 animateKeyCapDip(button, KeyVisualState.RESTING);
                                 dismissTravelPopup(false);
                                 restoreButtonVisualState(button, buttonInfo);
                                 releaseKeyGlow(button, isSpecialLatched(buttonInfo));
-                                mToolbarTextInputSwipeListener.run();
+                                mToolbarPageSwipeListener.onToolbarPageSwipe(pageSwipe);
                                 return true;
                             }
                             // A vertical-dominant swipe past the threshold is the popup gesture. A
@@ -1755,10 +1760,17 @@ public final class ExtraKeysView extends GridLayout {
         // A touch bigger than the key so the secondary glyph and its compact chip read clearly.
         mBubbleW = Math.round(mTravelKeyW * 1.2f);
         mBubbleH = Math.round(mTravelKeyH * 1.2f);
-        int screenW = getResources().getDisplayMetrics().widthPixels;
-        int centeredX = loc[0] - (mBubbleW - mTravelKeyW) / 2;
-        mTravelKeyScreenX = Math.max(0, Math.min(centeredX, Math.max(0, screenW - mBubbleW)));
-        mTravelKeyScreenY = loc[1] - (mBubbleH - mTravelKeyH) / 2;
+        // PopupWindow.showAtLocation/update take the parent window's coordinates, which differ
+        // from the screen's in split screen, so work in the window's: origin and width of the root.
+        View windowRoot = getRootView();
+        if (windowRoot == null) windowRoot = button;
+        int[] origin = new int[2];
+        windowRoot.getLocationOnScreen(origin);
+        int windowW = windowRoot.getWidth() > 0 ? windowRoot.getWidth()
+            : getResources().getDisplayMetrics().widthPixels;
+        int centeredX = loc[0] - origin[0] - (mBubbleW - mTravelKeyW) / 2;
+        mTravelKeyScreenX = Math.max(0, Math.min(centeredX, Math.max(0, windowW - mBubbleW)));
+        mTravelKeyScreenY = loc[1] - origin[1] - (mBubbleH - mTravelKeyH) / 2;
         // Clear the row: the bubble rises a full key-height plus a little more.
         mBubbleTravelDistPx = mTravelKeyH + dpToPx(16f);
         mTravelSourceText = button.getText();

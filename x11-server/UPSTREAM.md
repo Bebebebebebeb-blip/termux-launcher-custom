@@ -4,7 +4,10 @@ This module is a copy of termux-x11's `lorie` library module, in the same packag
 (`com.termux.x11`) so it stays diffable against upstream. The native half — `libXlorie.so`, the
 Xorg "Xlorie" DDX built against sixteen freedesktop submodules — is not built here: it is a
 committed prebuilt under `app/src/main/jniLibs/<abi>/`, produced by
-`.github/workflows/build_x11_native.yml` (and `../x11-local-build.sh`) from the same commit.
+`.github/workflows/build_x11_native.yml` (and `../x11-local-build.sh`) from the same commit, for
+arm64-v8a, x86_64, armeabi-v7a and x86. The two 32-bit builds were added on 2026-10-27 (built
+locally with the workflow's exact steps and NDK r29, as Actions were unavailable; a local arm64
+build from the same steps exports the same symbols as the CI one), so 32-bit phones get a display.
 
 - upstream: <https://github.com/termux/termux-x11> (GPLv3, the licence this app already ships under)
 - upstream commit: `9df8b767645aa0d0a2f2576767449df55b41962f` (2026-09-04)
@@ -109,6 +112,14 @@ screen is to own the server. See `project-docs/reference/launcher/pane-wall-x11-
   drops it. Both it and `requestClipboard` return early when `connected()` is false, and
   `connected()` itself now checks the pointer — a wall page is asked after it has left its
   window, where upstream's view is already gone with its activity.
+- **`LorieView.lastClipboardTimestamp` starts at 0**, not at `System.currentTimeMillis()`.
+  `checkForClipboardChange` announces a clip only when its timestamp is newer than the last
+  one announced, and upstream's initial value of "now" silently excludes every clip copied
+  before the view was created. In the launcher the view is created when the display window
+  first shows, so a URL copied in the terminal and then a display started for the browser was
+  never announced: the paste key (which refreshes before Ctrl+V) pasted nothing. Reproduced on
+  the emulator 2026-10-29 with Mousepad: a clip copied before `launcherctl launch mousepad`
+  never logged "sending clipboard announce"; one copied after did, and pasted.
 - **`LorieView.onCursorNameChanged(String)` (new)** is the Java end of that event: it keeps the
   last name (`getCursorName()`) and forwards it to an optional `CursorNameListener`. Upstream has
   no such method, so a nightly merge must carry it forward with the native patch.
@@ -245,3 +256,16 @@ Firefox as a second touch (a one-finger drag pinch-zoomed). Now DOWN ends every 
 its Begin, MOVE ends every held id the event lacks, and UP and CANCEL end every pointer in the
 event and every held id. POINTER_UP still ends only the lifting pointer. The wire calls are
 unchanged; the native side ignores an End for an inactive id.
+
+## 32-bit installs: the loader runs at the app's bitness (2026-10-27)
+
+- **`CmdEntryPoint.initEntryPoint`** no longer takes `lib/<SUPPORTED_ABIS[0]>/libXlorie.so`, which
+  on a 64-bit device names a folder a 32-bit APK does not carry (and a missing library was skipped
+  silently, ending in `UnsatisfiedLinkError`). `LibAbiChoice` (new) picks the first ABI of the
+  running process's bitness (`Process.is64Bit()`, `SUPPORTED_64_BIT_ABIS`/`SUPPORTED_32_BIT_ABIS`)
+  whose library is in the APK, falling back to `SUPPORTED_ABIS` order. None found: it logs the ABIs
+  tried, prints "Failed to load native library" and exits 134.
+- **The launcher's generated `termux-x11` and `termux-x11-preference` scripts** (not upstream's
+  `termux-x11.in`) exec `/system/bin/app_process32` when the launcher is a 32-bit process and that
+  binary exists, so the zygote binary matches the 32-bit library. Otherwise `app_process`, as before.
+  `X11CliInstaller.VERSION` was bumped so an existing install rewrites them.

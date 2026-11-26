@@ -58,8 +58,21 @@ public final class GuiAppsSetup {
      */
     public static final String WINDOW_MANAGER_PACKAGE = "openbox";
 
+    /**
+     * fcitx5 and its toolkit modules: GTK 3, which every starter app uses, and Qt, so a Qt app
+     * installed later reports focus too rather than leaving taps in it to the cursor alone.
+     */
+    private static final String[] INPUT_METHOD_PACKAGES = {"fcitx5", "fcitx5-gtk3", "fcitx5-qt"};
+
     /** Where {@code proot-distro} 5.x keeps its containers, as a Termux shell writes it. */
     private static final String CONTAINERS_PATH = "$PREFIX/var/lib/proot-distro/containers";
+
+    /**
+     * The Arch image for arm64 phones. The official {@code archlinux} image is amd64-only, so
+     * proot-distro 5.x installs Arch Linux ARM from this multi-arch image, rebuilt daily and the
+     * one upstream points to (termux/proot-distro issue 672). It ships its own pacman keyring.
+     */
+    private static final String ARCH_ARM_IMAGE = "menci/archlinuxarm";
 
     /** The one line the whole thing ends on, so the user knows it worked and where to look. */
     public static final String DONE_LINE =
@@ -350,6 +363,10 @@ public final class GuiAppsSetup {
         // mattered, so there it is asked for on its own after the rest, and a repository without
         // it stops nothing.
         if (!vaj) packages.add(WINDOW_MANAGER_PACKAGE);
+        // Exact text-field focus: fcitx5 and its GTK3 and Qt modules tell the display when a text
+        // field takes focus. GTK3 because the starter apps are GTK3. Termux's x11 repository
+        // only; VAJ's repository has not been checked for them.
+        if (!vaj) packages.addAll(Arrays.asList(INPUT_METHOD_PACKAGES));
         for (StarterApp app : StarterApp.values()) {
             if (vaj && app == StarterApp.BROWSER) continue;
             if (starters.contains(app)) packages.add(termuxPackageFor(app));
@@ -357,6 +374,22 @@ public final class GuiAppsSetup {
         String install = "pkg install -y " + join(packages);
         return vaj ? install + " && { pkg install -y " + WINDOW_MANAGER_PACKAGE + " || true; }"
             : "pkg install -y x11-repo && " + install;
+    }
+
+    /**
+     * The step that fetches the container. Arch is the one distro with no image for arm64 on
+     * Docker Hub, so on an arm64 phone it comes from an Arch Linux ARM image, under the same name.
+     */
+    @NonNull
+    static String installStep(@NonNull Distro distro) {
+        if (distro != Distro.ARCH) return "proot-distro install " + distro.alias;
+        return "{\n"
+            + "if [ \"$(uname -m)\" = aarch64 ]; then\n"
+            + "proot-distro install " + ARCH_ARM_IMAGE + " --name " + distro.alias + "\n"
+            + "else\n"
+            + "proot-distro install " + distro.alias + "\n"
+            + "fi\n"
+            + "}";
     }
 
     /**
@@ -386,7 +419,7 @@ public final class GuiAppsSetup {
             .append(" >/dev/null 2>&1 || { pkg install -y x11-repo >/dev/null 2>&1 || true; "
                 + "pkg install -y ").append(WINDOW_MANAGER_PACKAGE).append("; }\n");
         out.append("[ -d \"").append(CONTAINERS_PATH).append('/').append(distro.alias)
-            .append("/rootfs\" ] || proot-distro install ").append(distro.alias).append('\n');
+            .append("/rootfs\" ] || ").append(installStep(distro)).append('\n');
         // The name is asked for out here, not inside the container: the container is entered once,
         // and a name that was refused would mean entering it again.
         out.append("LUSER=\n");

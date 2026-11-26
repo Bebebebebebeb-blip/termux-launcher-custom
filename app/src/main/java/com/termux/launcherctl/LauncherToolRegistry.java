@@ -269,7 +269,10 @@ public final class LauncherToolRegistry {
                 TOOL_SESSION_NEW, TOOL_SESSION_NEXT, TOOL_SESSION_PREVIOUS,
                 TOOL_SESSION_CLOSE_CURRENT,
                 // The pill says it: listening, then what became of the text.
-                TOOL_VOICE_DICTATE));
+                TOOL_VOICE_DICTATE,
+                // The drawer coming up is the read-out; its name on the pill sat over the
+                // drawer's own search field (developer, 2026-11-20).
+                TOOL_APP_OPEN_APP_DRAWER));
 
         /** Agent-only tool: no UI metadata. */
         public ToolMetadata(
@@ -958,7 +961,10 @@ public final class LauncherToolRegistry {
             schemaEmpty(),
             ToolRisk.MEDIUM, true, ToolExecutor.TERMINAL,
             CATEGORY_CLIPBOARD, R.string.tool_clipboard_paste, R.string.tool_desc_clipboard_paste,
-            Collections.singletonList(Binding.of("ctrl+alt+v", BindingCondition.SPLITS_OFF)),
+            // Ctrl+Shift+V is what every desktop terminal pastes with, so a hardware keyboard
+            // gets it too; it never collides with the pane split that owns Ctrl+Alt+V.
+            Arrays.asList(Binding.of("ctrl+alt+v", BindingCondition.SPLITS_OFF),
+                Binding.of("ctrl+shift+v")),
             REQUIRES_SESSION);
 
         // Actions carrying a required argument. The palette skips these because it

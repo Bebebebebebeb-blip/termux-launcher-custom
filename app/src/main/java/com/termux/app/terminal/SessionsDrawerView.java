@@ -100,6 +100,13 @@ public final class SessionsDrawerView extends LinearLayout
          * nothing summons a keyboard on its behalf until there is somewhere for one to type.
          */
         void onTypingStarted();
+
+        /**
+         * The Saved half came into view, by its segment or by a door that opens on it: the saved
+         * files are read now, whichever way the drawer was opened, so the half never shows an
+         * empty list it was simply never given.
+         */
+        default void onSavedTabShown() {}
     }
 
     private static final float TITLE_SP = 14f;
@@ -181,8 +188,8 @@ public final class SessionsDrawerView extends LinearLayout
         segments.setOrientation(HORIZONTAL);
         mLiveTab = segment(R.string.sessions_drawer_live, Tab.LIVE);
         mSavedTab = segment(R.string.sessions_drawer_saved, Tab.SAVED);
-        segments.addView(mLiveTab, new LayoutParams(0, dp(32), 1f));
-        LayoutParams savedParams = new LayoutParams(0, dp(32), 1f);
+        segments.addView(mLiveTab, new LayoutParams(0, dp(32), 2f));
+        LayoutParams savedParams = new LayoutParams(0, dp(32), 3f);
         savedParams.setMarginStart(dp(4));
         segments.addView(mSavedTab, savedParams);
         LayoutParams segmentRow = new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
@@ -233,6 +240,7 @@ public final class SessionsDrawerView extends LinearLayout
         mTab = tab;
         collapseAll();
         rebuild();
+        if (tab == Tab.SAVED && mListener != null) mListener.onSavedTabShown();
     }
 
     /** Which session has unfolded its actions, and what it unfolded. */
@@ -873,6 +881,7 @@ public final class SessionsDrawerView extends LinearLayout
         view.setText(labelRes);
         view.setGravity(Gravity.CENTER);
         view.setMinWidth(0);
+        view.setPaddingRelative(dp(2), 0, dp(2), 0);
         // A segment carries one word in a space the font scale can halve, so it shrinks its text
         // rather than clipping it.
         androidx.core.widget.TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(

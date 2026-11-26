@@ -1060,8 +1060,10 @@ public final class TerminalEmulator {
         if (mRows == rows && mColumns == columns) {
             // A font size change moves the pixel size without moving the grid, and mode 2048 reports
             // pixels too, so it is still a resize as far as the program is concerned.
-            if (cellSizeChanged)
+            if (cellSizeChanged) {
+                endSynchronizedUpdateForResize();
                 sendInBandResizeReport();
+            }
             return;
         } else if (columns < 2 || rows < 2) {
             throw new IllegalArgumentException("rows=" + rows + ", columns=" + columns);
@@ -1088,17 +1090,29 @@ public final class TerminalEmulator {
             mLeftMargin = 0;
             mRightMargin = mColumns;
         }
+        endSynchronizedUpdateForResize();
         resizeScreen(keepCursorAtBottom);
         sendInBandResizeReport();
+    }
+
+    /**
+     * A resize ends an open synchronized update (mode 2026) and lets the screen draw, as kitty and
+     * Ghostty do: the frame the program was holding was drawn for the old size, and its repaint
+     * for the new one must not wait out the hold's timeout behind it.
+     */
+    private void endSynchronizedUpdateForResize() {
+        if (!isDecsetInternalBitSet(DECSET_BIT_SYNCHRONIZED_UPDATE)) return;
+        setDecsetinternalBit(DECSET_BIT_SYNCHRONIZED_UPDATE, false);
+        mSynchronizedUpdateDeadline = 0;
+        mKittyGraphics.synchronizedHoldEnded();
     }
 
     /**
      * Where {@link #resize} to {@code rows} rows, at the same columns, would move the rows now on
      * screen: how many rows down each surviving row lands (negative is up), before any resize has
      * happened. The bottom anchor is judged the way {@link #resize} judges it, against the cursor
-     * on the screen as it is. 0 when the row count does not change, and 0 on the alternate screen:
-     * a shrinking alternate buffer keeps its old ring but wraps it at the new, smaller total, so its
-     * rows do not land anywhere stable — the full-screen program repaints after the resize anyway.
+     * on the screen as it is. 0 when the row count does not change, and 0 on the alternate screen,
+     * which resizes in place, top-anchored ({@link TerminalBuffer#resizeWithoutRewrap}).
      *
      * @see TerminalBuffer#predictRowsOnlyResizeShift
      */
@@ -1234,9 +1248,14 @@ public final class TerminalEmulator {
 
     private void resizeScreen(boolean keepCursorAtBottom) {
         final int[] cursor = { mCursorCol, mCursorRow };
-        int newTotalRows = (mScreen == mAltBuffer) ? mRows : mMainBuffer.mTotalRows;
-        mScreen.resize(mColumns, mRows, newTotalRows, cursor, getStyle(),
-            isAlternateBufferActive(), keepCursorAtBottom);
+        if (mScreen == mAltBuffer) {
+            // In place, as kitty does: the ring below would wrap the alternate screen's rows at
+            // its new, smaller total and show them rotated until the program repaints.
+            mAltBuffer.resizeWithoutRewrap(mColumns, mRows, cursor, getStyle());
+        } else {
+            mScreen.resize(mColumns, mRows, mMainBuffer.mTotalRows, cursor, getStyle(),
+                isAlternateBufferActive(), keepCursorAtBottom);
+        }
         mCursorCol = cursor[0];
         mCursorRow = cursor[1];
         resetGraphemeTracking();

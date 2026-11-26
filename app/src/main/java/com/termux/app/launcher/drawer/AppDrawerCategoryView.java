@@ -1,5 +1,6 @@
 package com.termux.app.launcher.drawer;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.graphics.Color;
 import android.graphics.Rect;
@@ -15,10 +16,12 @@ import android.text.style.StyleSpan;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.VelocityTracker;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.ViewOutlineProvider;
+import android.view.ViewParent;
 import android.widget.ImageView;
 import android.widget.TextView;
 
@@ -31,6 +34,7 @@ import androidx.recyclerview.widget.RecyclerView;
 import com.termux.R;
 import com.termux.app.Spring;
 import com.termux.app.SuggestionBarView;
+import com.termux.app.launcher.model.LauncherAppEntry;
 import com.termux.app.chrome.ChromeShade;
 import com.termux.app.launcher.drawer.AppDrawerCategoryTouchRegions.Part;
 import com.termux.app.launcher.drawer.AppDrawerTransitionGeometry.Frame;
@@ -84,14 +88,22 @@ public final class AppDrawerCategoryView extends ViewGroup
     @Nullable private Runnable frameRequestListener;
     @Nullable private Runnable popupDismissCallback;
     @NonNull private List<AppDrawerCategoryBucket> buckets = Collections.emptyList();
+    /** {@link #setCatalogueLoaded}: false while the catalogue (re)loads. */
+    private boolean catalogueLoaded = true;
     @Nullable private AppDrawerCategoryBucket selectedBucket;
     @NonNull private Part streamPart = Part.OUTSIDE;
     private boolean streamFinalized;
     private float downRawY;
+    /** See {@link #setBottomInsetPx}; zero until the controller sets it. */
+    private int bottomInset;
     private float collapseStartProgress = 1f;
     private float headerDownX;
     private float headerDownY;
     private boolean headerMoved;
+    /** Raw-stream state for a pull that starts on the open folder's empty pane. */
+    private boolean emptyPaneTracking;
+    private float emptyPaneDownRawX;
+    @Nullable private VelocityTracker emptyPaneVelocity;
 
     public AppDrawerCategoryView(@NonNull Context context,
                                  @Nullable SuggestionBarView dock) {
@@ -239,6 +251,21 @@ public final class AppDrawerCategoryView extends ViewGroup
         addView(morph);
     }
 
+    /**
+     * Whether the catalogue behind the buckets has finished loading. While it (re)loads the
+     * buckets may be empty for no reason the user should see, so "Nothing here yet" waits for it.
+     */
+    public void setCatalogueLoaded(boolean loaded) {
+        if (catalogueLoaded == loaded) return;
+        catalogueLoaded = loaded;
+        applyEmptyState();
+    }
+
+    /** "Nothing here yet" only once the catalogue has loaded and holds nothing to show. */
+    private void applyEmptyState() {
+        emptyState.setVisibility(buckets.isEmpty() && catalogueLoaded ? VISIBLE : GONE);
+    }
+
     public void setDock(@Nullable SuggestionBarView dock) {
         tileAdapter.setDock(dock);
         detailAdapter.setDock(dock);
@@ -299,14 +326,41 @@ public final class AppDrawerCategoryView extends ViewGroup
         // edge, so in landscape — where a second row only half fits — the tiles read as clipped by
         // the plane rather than as a list that scrolls. One row gap of overscroll says the
         // difference, and the tiles still paint into it while dragging.
-        int bottom = Math.max(0, Math.round(metrics.itemGapPx + metrics.itemBottomGapPx));
-        overview.setPadding(horizontal, 0, horizontal, bottom);
+        overview.setPadding(horizontal, 0, horizontal, overviewBottomPaddingPx());
         overview.setClipToPadding(false);
         tileSpacing.setMetrics(metrics);
         overview.invalidateItemDecorations();
         tileAdapter.setMetrics(metrics);
         detailAdapter.setMetrics(metrics);
         requestLayout();
+    }
+
+    /**
+     * Ends the last overview card and the opened category's last row {@code bottomInsetPx} above
+     * the card's usable bottom. Each tile and row already carries its own trailing gap, which the
+     * padding gives back. Not per frame.
+     */
+    public void setBottomInsetPx(int bottomInsetPx) {
+        int inset = Math.max(0, bottomInsetPx);
+        if (inset == bottomInset) return;
+        bottomInset = inset;
+        int detail = AppDrawerContentInsetPolicy.listBottomPaddingPx(inset,
+            AppDrawerGridMetrics.ROW_BOTTOM_DP * getResources().getDisplayMetrics().density);
+        if (detailList.getPaddingBottom() != detail) {
+            detailList.setPadding(0, 0, 0, detail);
+            detailList.setClipToPadding(false);
+        }
+        int overviewBottom = overviewBottomPaddingPx();
+        if (overview.getPaddingBottom() != overviewBottom) {
+            overview.setPadding(overview.getPaddingLeft(), 0, overview.getPaddingRight(),
+                overviewBottom);
+        }
+    }
+
+    private int overviewBottomPaddingPx() {
+        AppDrawerCategoryGridMetrics current = metrics;
+        return AppDrawerContentInsetPolicy.listBottomPaddingPx(bottomInset,
+            current == null ? 0f : current.itemBottomGapPx);
     }
 
     public void submitBuckets(@NonNull List<AppDrawerCategoryBucket> newBuckets) {
@@ -344,7 +398,7 @@ public final class AppDrawerCategoryView extends ViewGroup
             int position = positionOfCategory(firstCategoryId);
             if (position >= 0) overviewLayout.scrollToPositionWithOffset(position, firstOffset);
         }
-        emptyState.setVisibility(buckets.isEmpty() ? VISIBLE : GONE);
+        applyEmptyState();
         overview.setVisibility(buckets.isEmpty() ? GONE : VISIBLE);
         requestLayout();
     }
@@ -544,13 +598,27 @@ public final class AppDrawerCategoryView extends ViewGroup
         morph.setClickable(false);
         overview.setAlpha(1f);
         overview.setVisibility(buckets.isEmpty() ? GONE : VISIBLE);
-        emptyState.setVisibility(buckets.isEmpty() ? VISIBLE : GONE);
+        applyEmptyState();
     }
 
     private void abortToOverview() {
         expansion.teardown();
         expansionSpring.reset(0f);
         tileAdapter.rebindAttachedPreviews();
+        finishAtOverview();
+        cancelGesture();
+    }
+
+    /**
+     * Stops the category transition for a drawer on its way out and keeps the tiles: the card keeps
+     * what it shows until it is gone, then {@link #reset} empties it.
+     */
+    public void stopForClose() {
+        clickGate.suppress();
+        expansion.teardown();
+        expansionSpring.reset(0f);
+        detailAdapter.releaseAttached(detailList);
+        selectedBucket = null;
         finishAtOverview();
         cancelGesture();
     }
@@ -596,6 +664,11 @@ public final class AppDrawerCategoryView extends ViewGroup
     /** One-way detail decision. Overview is deliberately handled by the shipped close policy. */
     public boolean claimDetailPreScroll(@NonNull View target, int dy, float rawY) {
         if (streamPart != Part.DETAIL_LIST || target != detailList) return false;
+        return claimDetailDrag(dy, rawY);
+    }
+
+    /** Shared by the grid's nested pre-scroll and the empty pane's raw stream. */
+    private boolean claimDetailDrag(int dy, float rawY) {
         AppDrawerCategoryGesturePolicy.Claim before = gesturePolicy.claim();
         AppDrawerCategoryGesturePolicy.Claim claim = gesturePolicy.claimOnPreScroll(dy);
         if (claim == AppDrawerCategoryGesturePolicy.Claim.SCROLL) {
@@ -669,7 +742,10 @@ public final class AppDrawerCategoryView extends ViewGroup
             if (contains(detailHeader, x, y) || contains(collapseChevron, x, y)
                 || contains(detailCount, x, y)) return Part.COLLAPSE_ACTION;
             if (contains(detailList, x, y)) return Part.DETAIL_LIST;
-            return Part.EMPTY_CHROME;
+            // The rest of the open pane is still the folder. A short folder (Suggestions caps at
+            // eight) sits at the bottom, so most of the screen is this band; handing it to the
+            // plane made a pull there close the whole drawer instead of the folder.
+            return Part.DETAIL_EMPTY;
         }
         if (buckets.isEmpty()) return Part.EMPTY_CHROME;
         for (int i = 0; i < overview.getChildCount(); i++) {
@@ -680,6 +756,72 @@ public final class AppDrawerCategoryView extends ViewGroup
                 || containsDescendant(tile.heading, x, y)) return Part.EXPAND_ACTION;
         }
         return contains(overview, x, y) ? Part.OVERVIEW_LIST : Part.EMPTY_CHROME;
+    }
+
+    /**
+     * Drives a pull that starts on the open folder's empty pane. No scrolling child sits under
+     * that band, so there is no nested pre-scroll to claim from; the raw stream feeds the same
+     * one-way policy and the same collapse drag the grid's pull uses. The content view has
+     * already begun the stream by the first MOVE, which is what {@link #streamPart} checks.
+     */
+    @SuppressLint("ClickableViewAccessibility")
+    @Override public boolean onTouchEvent(MotionEvent event) {
+        int action = event.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN) {
+            endEmptyPaneTracking();
+            if (touchPart(event.getX(), event.getY()) != Part.DETAIL_EMPTY)
+                return super.onTouchEvent(event);
+            emptyPaneTracking = true;
+            emptyPaneDownRawX = event.getRawX();
+            emptyPaneVelocity = VelocityTracker.obtain();
+            emptyPaneVelocity.addMovement(event);
+            return true;
+        }
+        if (!emptyPaneTracking) return super.onTouchEvent(event);
+        VelocityTracker tracker = emptyPaneVelocity;
+        if (tracker != null) tracker.addMovement(event);
+        switch (action) {
+            case MotionEvent.ACTION_MOVE:
+                if (streamPart == Part.DETAIL_EMPTY) claimEmptyPaneMove(event);
+                return true;
+            case MotionEvent.ACTION_UP:
+                float velocity = 0f;
+                if (tracker != null) {
+                    tracker.computeCurrentVelocity(1000);
+                    velocity = tracker.getYVelocity();
+                }
+                if (streamPart == Part.DETAIL_EMPTY) finishDetailGesture(velocity, false);
+                endEmptyPaneTracking();
+                return true;
+            case MotionEvent.ACTION_CANCEL:
+                if (streamPart == Part.DETAIL_EMPTY) finishDetailGesture(0f, true);
+                endEmptyPaneTracking();
+                return true;
+            default:
+                return true;
+        }
+    }
+
+    private void claimEmptyPaneMove(@NonNull MotionEvent event) {
+        float travel = event.getRawY() - downRawY;
+        if (gesturePolicy.claim() == AppDrawerCategoryGesturePolicy.Claim.PENDING) {
+            // The grid only reports a pre-scroll past touch slop; the raw stream holds the same
+            // line, and a sideways drift is not a pull.
+            float across = Math.abs(event.getRawX() - emptyPaneDownRawX);
+            if (Math.abs(travel) <= touchSlop || Math.abs(travel) <= across) return;
+        }
+        // Nested-scroll sign: a finger moving down is a negative dy.
+        if (claimDetailDrag(-Math.round(travel), event.getRawY())) {
+            ViewParent parent = getParent();
+            if (parent != null) parent.requestDisallowInterceptTouchEvent(true);
+        }
+    }
+
+    private void endEmptyPaneTracking() {
+        emptyPaneTracking = false;
+        VelocityTracker tracker = emptyPaneVelocity;
+        emptyPaneVelocity = null;
+        if (tracker != null) tracker.recycle();
     }
 
     private boolean containsDescendant(@NonNull View child, float x, float y) {
@@ -702,6 +844,26 @@ public final class AppDrawerCategoryView extends ViewGroup
         if (expansion.state() == AppDrawerCategoryExpansionModel.State.OVERVIEW && !buckets.isEmpty())
             return overview;
         return null;
+    }
+    /**
+     * The app a finger at this view's local ({@code x}, {@code y}) is on: a row of the open
+     * category, or one of a tile's launch icons. Null anywhere else.
+     */
+    @Nullable public LauncherAppEntry appEntryAt(float x, float y) {
+        RecyclerView active = activeRecyclerView();
+        if (active == null || getVisibility() != VISIBLE) return null;
+        float localX = x - active.getLeft();
+        float localY = y - active.getTop();
+        View child = active.findChildViewUnder(localX, localY);
+        if (child == null) return null;
+        if (active == detailList) {
+            int position = active.getChildAdapterPosition(child);
+            List<LauncherAppEntry> entries = detailAdapter.entries();
+            return position >= 0 && position < entries.size() ? entries.get(position) : null;
+        }
+        if (!(child instanceof AppDrawerCategoryTileView)) return null;
+        return ((AppDrawerCategoryTileView) child).launchEntryAt(
+            localX - child.getLeft(), localY - child.getTop());
     }
     public boolean isOverview() {
         return expansion.state() == AppDrawerCategoryExpansionModel.State.OVERVIEW;

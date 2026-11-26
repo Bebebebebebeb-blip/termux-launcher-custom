@@ -161,9 +161,9 @@ things) and the display server passes that name on. Only the name seen in the mo
 counts, so a pointer crossing a text field on its way somewhere else opens nothing. An app that
 never asks for a text cursor, or a session with no cursor theme installed, cannot be recognised
 this way; the keyboard key, the display's Back button and the signal below all still work.
-GTK and Qt apps pick up the Adwaita theme that ships with them; core X apps such as xterm only
-use it with `XCURSOR_THEME=Adwaita` in their environment (or a `default` cursor theme that
-inherits it).
+GTK and Qt apps pick up the Adwaita theme that ships with them. Apps opened from the drawer get
+the Adwaita cursors when they are installed, and a `default` cursor theme of your own wins. Apps
+you start from a terminal still need `XCURSOR_THEME=Adwaita` in their environment.
 
 **Your input method's own focus.** Exact, and opt in. Two commands feed the same behaviour from a
 shell, so anything that knows when a field takes focus can drive it:
@@ -223,14 +223,14 @@ installed, and `launcherctl x11 gpu --env` prints the exports to paste or `eval`
 → Set up Linux apps → Graphics**: **Graphics acceleration** shows what the phone can do, and **Copy
 the graphics command** puts the install line and the exports for this phone on the clipboard.
 
-Or let the phone decide by trying: `termux-x11-gpu-setup` installs the drivers for every row that
-fits this phone, runs a short 3D test with each on a private display, keeps the one that really
-uses the GPU and is clearly faster than software, and removes the rest again. It explains each
+Or let the phone decide by trying: **Benchmark graphics** on the same screen copies
+`termux-x11-gpu-setup`, which you paste into the terminal and run. It installs the drivers for
+every row that fits this phone, runs a short 3D test with each on a private display, keeps the one
+that really uses the GPU and is clearly faster than software, and removes the rest again. It explains each
 step as it goes, asks before installing anything, and writes what it decided to
 `~/.config/termux-launcher/x11-gpu.env`. With a Debian proot installed it repeats the test inside
 the container. `--keep` leaves every package in place, `--skip-proot` skips the container,
 `--yes` skips the question, and `--display=N` runs the tests on display `:N` (`:7` by default).
-`tlstore display` runs the same script.
 
 Check what you got with `glmark2-es2` (from `x11-repo`): its first lines name the renderer, and
 the score with the Display place *showing* is the one that means anything; hidden, the server has
@@ -279,6 +279,8 @@ proot-distro install archlinux
 termux-x11 :0 &
 proot-distro login archlinux --shared-x11 -e DISPLAY=:0
 ```
+
+On arm64 phones the Docker `archlinux` image is amd64-only; install Arch Linux ARM from the `menci/archlinuxarm` image instead (`proot-distro install menci/archlinuxarm --name archlinux`). The Linux apps setup does this for you.
 
 `--shared-x11` hands the container the socket directory and nothing else; `--shared-tmp` shares
 the whole temporary directory and works too. Neither is on by default. `DISPLAY` has to be passed

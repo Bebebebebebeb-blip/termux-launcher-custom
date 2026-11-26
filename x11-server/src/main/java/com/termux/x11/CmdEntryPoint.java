@@ -27,6 +27,7 @@ import dalvik.annotation.optimization.CriticalNative;
 import java.io.OutputStream;
 import java.io.PrintStream;
 import java.net.URL;
+import java.util.Arrays;
 
 @Keep @SuppressLint({"StaticFieldLeak", "UnsafeDynamicallyLoadedCode"})
 public class CmdEntryPoint extends ICmdEntryInterface.Stub {
@@ -35,6 +36,11 @@ public class CmdEntryPoint extends ICmdEntryInterface.Stub {
     public static Context ctx;
     private final Intent intent = createIntent();
     private boolean broadcastPending;
+    /**
+     * A throwaway server (the launcher's graphics setup test) sets this so no app adopts it as the
+     * display: with it, nothing is ever announced.
+     */
+    static final boolean HEADLESS = "1".equals(System.getenv("TERMUX_X11_HEADLESS"));
 
     /**
      * Command-line entry point.
@@ -71,6 +77,8 @@ public class CmdEntryPoint extends ICmdEntryInterface.Stub {
     }
 
     private void sendBroadcast() {
+        if (HEADLESS)
+            return;
         // Called from native (the X server thread) on every knock on the port; coalesce
         // bursts into a single broadcast fired 250ms later.
         synchronized (this) {
@@ -85,6 +93,8 @@ public class CmdEntryPoint extends ICmdEntryInterface.Stub {
     }
 
     static void sendBroadcast(Intent intent) {
+        if (HEADLESS)
+            return;
         try {
             ctx.sendBroadcast(intent);
         } catch (Exception e) {
@@ -134,7 +144,7 @@ public class CmdEntryPoint extends ICmdEntryInterface.Stub {
     // In some cases Android Activity part can not connect opened port.
     // In this case opened port works like a lock file.
     private void sendBroadcastDelayed() {
-        if (!connected())
+        if (!HEADLESS && !connected())
             sendBroadcast(intent);
 
         handler.postDelayed(this::sendBroadcastDelayed, 1000);
@@ -188,18 +198,27 @@ public class CmdEntryPoint extends ICmdEntryInterface.Stub {
     private static void initEntryPoint() {
         ctx = createContext();
 
-        String path = "lib/" + Build.SUPPORTED_ABIS[0] + "/libXlorie.so";
         ClassLoader loader = CmdEntryPoint.class.getClassLoader();
-        URL res = loader != null ? loader.getResource(path) : null;
-        String libPath = res != null ? res.getFile().replace("file:", "") : null;
-        if (libPath != null) {
-            try {
-                System.load(libPath);
-            } catch (Exception e) {
-                Log.e("CmdEntryPoint", "Failed to dlopen " + libPath, e);
-                System.err.println("Failed to load native library. Did you install the right apk? Try the universal one.");
-                System.exit(134);
-            }
+        // The process's own bitness picks the folder: a 32-bit app on a 64-bit device carries
+        // only lib/x86 or lib/armeabi-v7a, while SUPPORTED_ABIS[0] names the 64-bit one.
+        String abi = LibAbiChoice.choose(android.os.Process.is64Bit(),
+            Build.SUPPORTED_64_BIT_ABIS, Build.SUPPORTED_32_BIT_ABIS, Build.SUPPORTED_ABIS,
+            a -> loader != null && loader.getResource("lib/" + a + "/libXlorie.so") != null);
+        if (abi == null) {
+            Log.e("CmdEntryPoint", "No libXlorie.so for " + Arrays.toString(Build.SUPPORTED_ABIS));
+            System.err.println("Failed to load native library: no libXlorie.so for ABIs "
+                + Arrays.toString(Build.SUPPORTED_ABIS) + ". Did you install the right apk? Try the universal one.");
+            System.exit(134);
+            return;
+        }
+        URL res = loader.getResource("lib/" + abi + "/libXlorie.so");
+        String libPath = res.getFile().replace("file:", "");
+        try {
+            System.load(libPath);
+        } catch (Throwable e) {
+            Log.e("CmdEntryPoint", "Failed to dlopen " + libPath, e);
+            System.err.println("Failed to load native library. Did you install the right apk? Try the universal one.");
+            System.exit(134);
         }
     }
 }
